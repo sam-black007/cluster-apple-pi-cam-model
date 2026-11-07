@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DroneInterceptor Tactical Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background: #0b0c10; color: #c5c6c7; font-family: 'Segoe UI', sans-serif; }
+  .hud-border { border: 1px solid #45a29e; border-radius: 6px; }
+  .scanline {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    background: linear-gradient(to bottom, rgba(18,16,16,0) 50%, rgba(0,0,0,0.25) 50%),
+                linear-gradient(to right, rgba(0,0,0,0), rgba(69,162,158,0.05), rgba(0,0,0,0));
+    pointer-events: none; z-index: 20;
+  }
+  .lock-green { color: #00ff00; text-shadow: 0 0 6px #00ff00; }
+  .lock-red   { color: #ff3333; text-shadow: 0 0 6px #ff3333; }
+  .cam-box { background: #000; border-radius: 4px; overflow: hidden; }
+</style>
+</head>
+<body class="p-4 min-h-screen">
+
+<!-- Header -->
+<div class="max-w-6xl mx-auto mb-4">
+  <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-bold text-cyan-400 tracking-wider">
+        DRONEINTERCEPTOR &mdash; TACTICAL HUD
+      </h1>
+      <p class="text-sm text-gray-400">Localhost &bull; FastAPI + Uvicorn &bull; MJPEG telemetry stream</p>
+    </div>
+    <div class="flex gap-3">
+      <button id="btnWebcam" class="px-4 py-2 bg-cyan-900/50 border border-cyan-500/30 text-cyan-300 rounded hover:bg-cyan-800/30 transition text-sm">Webcam</button>
+      <button id="btnVideo" class="px-4 py-2 bg-gray-800/50 border border-gray-600 text-gray-300 rounded hover:bg-gray-700/30 transition text-sm">Video File</button>
+      <input type="file" id="fileVideo" accept="video/*" class="hidden">
+      <button id="btnReset" class="px-4 py-2 bg-red-900/30 border border-red-500/30 text-red-300 rounded hover:bg-red-800/30 transition text-sm">Reset Tracker</button>
+    </div>
+  </div>
+</div>
+
+<!-- Main layout -->
+<div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+  <!-- Video stage (9 cols) -->
+  <div class="lg:col-span-9 flex flex-col gap-3">
+    <div class="relative hud-border shadow-[0_0_20px_rgba(69,162,158,0.15)] overflow-hidden">
+      <div class="scanline"></div>
+      <div class="cam-box w-full aspect-video">
+        <img id="mjpegImg" src="/video_feed" class="w-full h-full object-contain bg-black">
+      </div>
+      <!-- HUD corner markers -->
+      <div class="absolute top-3 left-3 w-8 h-8 border-t-2 border-l-2 border-cyan-500"></div>
+      <div class="absolute top-3 right-3 w-8 h-8 border-t-2 border-r-2 border-cyan-500"></div>
+      <div class="absolute bottom-3 left-3 w-8 h-8 border-b-2 border-l-2 border-cyan-500"></div>
+      <div class="absolute bottom-3 right-3 w-8 h-8 border-b-2 border-r-2 border-cyan-500"></div>
+      <!-- Center crosshair overlay -->
+      <div class="absolute top-1/2 left-1/2 w-4 h-4 border border-yellow-400/60 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-10"></div>
+      <div class="absolute top-1/2 left-1/2 w-px h-6 bg-yellow-400/40 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-10"></div>
+      <div class="absolute top-1/2 left-1/2 h-px w-6 bg-yellow-400/40 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-10"></div>
+    </div>
+
+    <!-- Source status strip -->
+    <div class="flex items-center gap-4 text-xs text-gray-400 bg-gray-900/80 backdrop-blur px-3 py-2 rounded hud-border">
+      <span>Source: <span id="srcBadge" class="font-mono text-cyan-400">SYSTEM</span></span>
+      <span class="w-px h-3 bg-gray-600 mx-1"></span>
+      <span id="confBadge" class="font-mono">CONF 0.25</span>
+    </div>
+  </div>
+
+  <!-- Telemetry panel (3 cols) -->
+  <div class="lg:col-span-3 flex flex-col gap-3">
+    <div class="hud-border bg-gray-900/80 backdrop-blur p-4 shadow-[0_0_15px_rgba(69,162,158,0.1)]">
+      <h2 class="text-cyan-400 font-bold mb-3 text-sm tracking-wider uppercase">TELEMETRY</h2>
+
+      <div class="space-y-3">
+        <!-- Lock status -->
+        <div class="flex items-center justify-between p-2 rounded bg-gray-800/50">
+          <span class="text-sm text-gray-300">Target Lock</span>
+          <span id="lockStatus" class="text-xs font-bold lock-red px-2 py-1 rounded">SEARCHING</span>
+        </div>
+
+        <!-- Coordinates -->
+        <div class="grid grid-cols-2 gap-2">
+          <div class="p-2 rounded bg-gray-800/50">
+            <div class="text-[10px] text-gray-500 uppercase">CX</div>
+            <div id="valCx" class="font-mono text-sm text-cyan-300">--</div>
+          </div>
+          <div class="p-2 rounded bg-gray-800/50">
+            <div class="text-[10px] text-gray-500 uppercase">CY</div>
+            <div id="valCy" class="font-mono text-sm text-cyan-300">--</div>
+          </div>
+        </div>
+
+        <!-- Angles -->
+        <div class="grid grid-cols-2 gap-2">
+          <div class="p-2 rounded bg-gray-800/50">
+            <div class="text-[10px] text-gray-500 uppercase">Yaw</div>
+            <div id="valYaw" class="font-mono text-sm text-yellow-300">0.0&deg;</div>
+          </div>
+          <div class="p-2 rounded bg-gray-800/50">
+            <div class="text-[10px] text-gray-500 uppercase">Pitch</div>
+            <div id="valPitch" class="font-mono text-sm text-yellow-300">0.0&deg;</div>
+          </div>
+        </div>
+
+        <!-- Commands -->
+        <div class="grid grid-cols-2 gap-2">
+          <div class="p-2 rounded bg-gray-800/50">
+            <div class="text-[10px] text-gray-500 uppercase">Cmd Yaw</div>
+            <div id="valCmdYaw" class="font-mono text-sm text-green-400">0.000</div>
+          </div>
+          <div class="p-2 rounded bg-gray-800/50">
+            <div class="text-[10px] text-gray-500 uppercase">Cmd Pitch</div>
+            <div id="valCmdPitch" class="font-mono text-sm text-green-400">0.000</div>
+          </div>
+        </div>
+
+        <!-- Perf -->
+        <div class="grid grid-cols-2 gap-2">
+          <div class="p-2 rounded bg-gray-800/50">
+            <div class="text-[10px] text-gray-500 uppercase">FPS</div>
+            <div id="valFps" class="font-mono text-sm text-green-400">0.0</div>
+          </div>
+          <div class="p-2 rounded bg-gray-800/50">
+            <div class="text-[10px] text-gray-500 uppercase">Latency</div>
+            <div id="valLat" class="font-mono text-sm text-green-400">0.0 ms</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Controls sliders -->
+      <div class="mt-5 pt-4 border-t border-gray-700">
+        <h3 class="text-cyan-400 font-bold text-xs mb-3 tracking-wider uppercase">Control Sliders</h3>
+        <div class="space-y-4">
+          <div>
+            <div class="flex justify-between text-xs mb-1">
+              <span class="text-gray-300">Confidence</span>
+              <span id="lblConf" class="text-cyan-300 font-mono">0.25</span>
+            </div>
+            <input type="range" id="sldConf" min="0.05" max="0.95" step="0.05" value="0.25"
+                   class="w-full accent-cyan-500 h-1 bg-gray-700 rounded-lg cursor-pointer">
+          </div>
+          <div>
+            <div class="flex justify-between text-xs mb-1">
+              <span class="text-gray-300">Kp</span>
+              <span id="lblKp" class="text-cyan-300 font-mono">0.04</span>
+            </div>
+            <input type="range" id="sldKp" min="0.00" max="0.20" step="0.01" value="0.04"
+                   class="w-full accent-cyan-500 h-1 bg-gray-700 rounded-lg cursor-pointer">
+          </div>
+          <div>
+            <div class="flex justify-between text-xs mb-1">
+              <span class="text-gray-300">Kd</span>
+              <span id="lblKd" class="text-cyan-300 font-mono">0.012</span>
+            </div>
+            <input type="range" id="sldKd" min="0.000" max="0.100" step="0.001" value="0.012"
+                   class="w-full accent-cyan-500 h-1 bg-gray-700 rounded-lg cursor-pointer">
+          </div>
+          <div>
+            <div class="flex justify-between text-xs mb-1">
+              <span class="text-gray-300">Deadband (deg)</span>
+              <span id="lblDb" class="text-cyan-300 font-mono">1.5</span>
+            </div>
+            <input type="range" id="sldDb" min="0.0" max="5.0" step="0.5" value="1.5"
+                   class="w-full accent-cyan-500 h-1 bg-gray-700 rounded-lg cursor-pointer">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Notes -->
+    <div class="hud-border bg-gray-900/50 p-3 text-[11px] text-gray-500 leading-relaxed">
+      <p>&bull; Green box = drone (locked target), Orange = bird (confuser)</p>
+      <p>&bull; MJPEG stream at <code class="text-cyan-400">/video_feed</code></p>
+      <p>&bull; Telemetry API: <code class="text-cyan-400">GET /api/telemetry</code></p>
+      <p>&bull; Settings API: <code class="text-cyan-400">POST /api/settings</code></p>
+      <p>&bull; Video upload: <code class="text-cyan-400">POST /api/upload_video</code></p>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---- Element refs ----
+const img = document.getElementById('mjpegImg');
+const srcBadge = document.getElementById('srcBadge');
+const confBadge = document.getElementById('confBadge');
+const lockStatus = document.getElementById('lockStatus');
+const valCx = document.getElementById('valCx');
+const valCy = document.getElementById('valCy');
+const valYaw = document.getElementById('valYaw');
+const valPitch = document.getElementById('valPitch');
+const valCmdYaw = document.getElementById('valCmdYaw');
+const valCmdPitch = document.getElementById('valCmdPitch');
+const valFps = document.getElementById('valFps');
+const valLat = document.getElementById('valLat');
+
+// Sliders
+const sldConf = document.getElementById('sldConf');
+const lblConf = document.getElementById('lblConf');
+const sldKp = document.getElementById('sldKp');
+const lblKp = document.getElementById('lblKp');
+const sldKd = document.getElementById('sldKd');
+const lblKd = document.getElementById('lblKd');
+const sldDb = document.getElementById('sldDb');
+const lblDb = document.getElementById('lblDb');
+
+// Buttons
+const btnWebcam = document.getElementById('btnWebcam');
+const btnVideo = document.getElementById('btnVideo');
+const fileVideo = document.getElementById('fileVideo');
+const btnReset = document.getElementById('btnReset');
+
+// ---- MJPEG stream reconnect resilience ----
+img.onerror = () => { setTimeout(() => { img.src = "/video_feed?" + Date.now(); }, 500); };
+
+// ---- Telemetry polling ----
+async function pollTelemetry() {
+  try {
+    const res = await fetch("/api/telemetry", { cache: "no-store" });
+    const j = await res.json();
+    const locked = j.locked === true;
+    lockStatus.textContent = locked ? "LOCKED" : "SEARCHING";
+    lockStatus.className = locked ? "text-xs font-bold lock-green px-2 py-1 rounded"
+                                   : "text-xs font-bold lock-red px-2 py-1 rounded";
+    valCx.textContent = j.cx !== null ? j.cx : "--";
+    valCy.textContent = j.cy !== null ? j.cy : "--";
+    valYaw.textContent = (j.yaw_deg ?? 0).toFixed(1) + "&deg;";
+    valPitch.textContent = (j.pitch_deg ?? 0).toFixed(1) + "&deg;";
+    valCmdYaw.textContent = (j.cmd_yaw ?? 0).toFixed(3);
+    valCmdPitch.textContent = (j.cmd_pitch ?? 0).toFixed(3);
+    valFps.textContent = (j.fps ?? 0).toFixed(1);
+    valLat.textContent = (j.latency_ms ?? 0).toFixed(1) + " ms";
+    srcBadge.textContent = (j.source || "idle").toUpperCase();
+  } catch (e) { /* ignore fetch errors during startup */ }
+}
+setInterval(pollTelemetry, 100);
+pollTelemetry();
+
+// ---- Slider sync -> POST /api/settings ----
+function sendSettings() {
+  const payload = {
+    conf: parseFloat(sldConf.value),
+    kp: parseFloat(sldKp.value),
+    kd: parseFloat(sldKd.value),
+    deadband: parseFloat(sldDb.value),
+  };
+  lblConf.textContent = payload.conf.toFixed(2);
+  lblKp.textContent = payload.kp.toFixed(2);
+  lblKd.textContent = payload.kd.toFixed(3);
+  lblDb.textContent = payload.deadband.toFixed(1);
+  confBadge.textContent = "CONF " + payload.conf.toFixed(2);
+  fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).catch(() => {});
+}
+[sldConf, sldKp, sldKd, sldDb].forEach(s => s.addEventListener("input", sendSettings));
+
+// ---- Source switching ----
+async function setSource(source) {
+  try {
+    await fetch("/api/source", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source }),
+    });
+  } catch (e) { console.error(e); }
+  // refresh mjpeg img to reconnect to new stream
+  img.src = "/video_feed?" + Date.now();
+  btnWebcam.className = source === "webcam"
+    ? "px-4 py-2 bg-cyan-900/50 border border-cyan-500/30 text-cyan-300 rounded hover:bg-cyan-800/30 transition text-sm"
+    : "px-4 py-2 bg-gray-800/50 border border-gray-600 text-gray-300 rounded hover:bg-gray-700/30 transition text-sm";
+  btnVideo.className = source === "video"
+    ? "px-4 py-2 bg-cyan-900/50 border border-cyan-500/30 text-cyan-300 rounded hover:bg-cyan-800/30 transition text-sm"
+    : "px-4 py-2 bg-gray-800/50 border border-gray-600 text-gray-300 rounded hover:bg-gray-700/30 transition text-sm";
+}
+btnWebcam.addEventListener("click", () => setSource("webcam"));
+btnVideo.addEventListener("click", () => fileVideo.click());
+
+fileVideo.addEventListener("change", async () => {
+  const file = fileVideo.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const res = await fetch("/api/upload_video", { method: "POST", body: fd });
+    const j = await res.json();
+    if (j.ok) {
+      setSource("video");
+      img.src = "/video_feed?" + Date.now();
+    }
+  } catch (e) { console.error(e); }
+});
+
+btnReset.addEventListener("click", async () => {
+  try {
+    await fetch("/api/reset", { method: "POST" });
+  } catch (e) { /* /api/reset may not exist on all versions */ }
+});
+</script>
+</body>
+</html>
