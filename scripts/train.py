@@ -1,17 +1,20 @@
 """
 train.py
 ========
-Fine-tune YOLO11n into a 2-class (drone, bird) detector.
+Fine-tune YOLO11 / LMWP-YOLO into a 2-class (drone, bird) detector.
 
-Primary tracked class: drone (0). Bird (1) is a confuser/negative class used
-to cut false positives.
-
-Runs on the local RTX 4060 (CUDA). If training is interrupted, re-run with
---resume to continue from the last checkpoint instead of restarting.
+Enhancements based on:
+"Improved YOLO for long range detection of small drones" (Scientific Reports 2025)
+DOI: 10.1038/s41598-025-95580-z
+  - LMWP-YOLO architecture with PP-LCNet lightweight backbone
+  - MCA (Multidimensional Collaborative Attention)
+  - P2 (Stride 4) micro-drone prediction head for long-range intercepts
+  - Normalized Wasserstein Distance (NWD) compatibility
 
 Usage:
-    python scripts/train.py                # fresh training
-    python scripts/train.py --resume       # continue from last.pt
+    python scripts/train.py                        # standard training
+    python scripts/train.py --lmwp                 # train LMWP-YOLO (Scientific Reports 2025)
+    python scripts/train.py --resume               # continue from last.pt
 """
 
 import argparse
@@ -44,6 +47,13 @@ from ultralytics import YOLO
 sys.stdout, sys.stderr = _stdout, _stderr
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+try:
+    from models.lmwp_factory import build_lmwp_yolo, register_lmwp_modules
+    register_lmwp_modules()
+except Exception:
+    build_lmwp_yolo = None
+
 DATA = ROOT / "data" / "dataset.yaml"
 RUN_NAME = "drone_bird"
 
@@ -52,6 +62,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--resume", action="store_true",
                     help="resume from runs/detect/drone_bird/weights/last.pt")
+    ap.add_argument("--lmwp", action="store_true",
+                    help="enable LMWP-YOLO (Scientific Reports 2025: PP-LCNet + MCA + P2 scale)")
+    ap.add_argument("--model-cfg", default=None,
+                    help="custom model YAML architecture (e.g. models/lmwp_yolo.yaml)")
+    ap.add_argument("--pretrained", default="yolo11n.pt",
+                    help="pretrained weights to transfer into backbone")
     ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--batch", type=int, default=16)
@@ -75,17 +91,26 @@ def main() -> None:
         model.train(resume=True)
         return
 
-    # Fresh start. yolo11n pretrained on COCO gives a strong backbone.
-    model = YOLO("yolo11n.pt")
+    if args.lmwp or args.model_cfg:
+        cfg = args.model_cfg or str(ROOT / "models" / "lmwp_yolo.yaml")
+        print(f"[TRAIN] Building LMWP-YOLO architecture from: {cfg}")
+        if build_lmwp_yolo is not None:
+            model = build_lmwp_yolo(cfg, pretrained_weights=args.pretrained)
+        else:
+            model = YOLO(cfg)
+    else:
+        # Fresh start. Pretrained weights give strong backbone.
+        model = YOLO(args.pretrained if Path(args.pretrained).exists() else "yolo11n.pt")
 
     print("[TRAIN] starting fresh 2-class training")
-    print(f"  data   : {args.data}")
-    print(f"  epochs : {args.epochs}")
-    print(f"  imgsz  : {args.imgsz}")
-    print(f"  batch  : {args.batch}")
-    print(f"  device : {args.device}")
-    print(f"  cache  : {args.cache}")
-    print(f"  plots  : {args.plots}")
+    print(f"  data       : {args.data}")
+    print(f"  epochs     : {args.epochs}")
+    print(f"  imgsz      : {args.imgsz}")
+    print(f"  batch      : {args.batch}")
+    print(f"  device     : {args.device}")
+    print(f"  cache      : {args.cache}")
+    print(f"  plots      : {args.plots}")
+    print(f"  lmwp_mode  : {args.lmwp or bool(args.model_cfg)}")
 
     cache = args.cache
     if isinstance(cache, str):
@@ -108,6 +133,15 @@ def main() -> None:
         cos_lr=True,
         verbose=True,         # live status in terminal
         exist_ok=True,
+        # Focal loss + aerial augmentation for small/distant targets
+        fl_gamma=1.5,
+        scale=0.6,
+        mosaic=1.0,
+        mixup=0.15,
+        copy_paste=0.2,
+        degrees=15.0,
+        hsv_s=0.5,
+        hsv_v=0.4,
     )
 
     print("\n[TRAIN] done. Best weights -> "

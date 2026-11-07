@@ -46,10 +46,10 @@ DATA_SOURCES = [
     },
     {
         "kind": "kaggle",
-        "slug": "gpiosenka/birdies",
-        "name": "bird_birdies",
+        "slug": "chunggr/fbd-sv-2024",
+        "name": "bird_flying_fbd",
         "klass": "bird",
-        "fmt": "yolo",
+        "fmt": "voc",
     },
     # Extra drone data (small, YOLO) - adds more drone variety
     {

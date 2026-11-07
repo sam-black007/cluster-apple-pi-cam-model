@@ -34,33 +34,83 @@ import json
 import numpy as np
 import cv2
 
-from rpi_infer import (
-    load_interpreter, open_source, preprocess, quantize_input,
-    decode, nms, DroneTracker, CLASS_NAMES, DRONE_ID, IMG_SIZE,
-)
+try:
+    from rpi_infer import (
+        load_interpreter, open_source, preprocess, quantize_input,
+        decode, nms, DroneTracker, CLASS_NAMES, DRONE_ID, IMG_SIZE,
+    )
+except ImportError:
+    from deploy.rpi_infer import (
+        load_interpreter, open_source, preprocess, quantize_input,
+        decode, nms, DroneTracker, CLASS_NAMES, DRONE_ID, IMG_SIZE,
+    )
 
 # ---------------------------------------------------------------------------
 # Angle / command math
 # ---------------------------------------------------------------------------
 class AimController:
-    def __init__(self, fov_h=62.0, fov_v=48.0, kp=0.05, max_cmd=1.0):
+    def __init__(self, fov_h=62.0, fov_v=48.0, kp=0.04, kd=0.012,
+                 deadband_deg=1.5, lpf_alpha=0.7, max_cmd=1.0):
         self.fov_h = math.radians(fov_h)
         self.fov_v = math.radians(fov_v)
         self.kp = kp
+        self.kd = kd
+        self.deadband_deg = deadband_deg
+        self.lpf_alpha = lpf_alpha
         self.max_cmd = max_cmd
+        self.reset()
+
+    def reset(self):
+        """Reset timing/error/derivative state (avoids derivative kicks)."""
+        self.last_time = None
+        self.last_err_yaw = 0.0
+        self.last_err_pitch = 0.0
+        self.prev_d_yaw = 0.0
+        self.prev_d_pitch = 0.0
+
+    @staticmethod
+    def _apply_deadband(err, deadband_deg):
+        if abs(err) <= deadband_deg:
+            return 0.0
+        return math.copysign(abs(err) - deadband_deg, err)
 
     def compute(self, cx, cy, W, H):
         """Return (yaw_angle, pitch_angle, cmd_yaw, cmd_pitch, cmd_roll)."""
+        now = time.perf_counter()
+        dt = now - self.last_time if self.last_time is not None else 0.0
+        self.last_time = now
+
         # normalized offset from center, [-1, 1]
         nx = (cx - W / 2) / (W / 2)
         ny = (cy - H / 2) / (H / 2)
 
-        yaw_angle = nx * (self.fov_h / 2.0)      # +right
-        pitch_angle = -ny * (self.fov_v / 2.0)   # +up (target above center)
+        yaw_angle = nx * (self.fov_h / 2.0)      # +right (radians)
+        pitch_angle = -ny * (self.fov_v / 2.0)   # +up (radians)
 
-        cmd_yaw = float(np.clip(self.kp * math.degrees(yaw_angle),
+        # work in degrees; apply deadband per axis
+        err_yaw = self._apply_deadband(math.degrees(yaw_angle), self.deadband_deg)
+        err_pitch = self._apply_deadband(math.degrees(pitch_angle), self.deadband_deg)
+
+        # filtered derivative of error
+        if dt > 0.0:
+            raw_d_yaw = (err_yaw - self.last_err_yaw) / dt
+            raw_d_pitch = (err_pitch - self.last_err_pitch) / dt
+        else:
+            raw_d_yaw = 0.0
+            raw_d_pitch = 0.0
+
+        d_yaw_filt = self.lpf_alpha * raw_d_yaw + (1.0 - self.lpf_alpha) * self.prev_d_yaw
+        d_pitch_filt = self.lpf_alpha * raw_d_pitch + (1.0 - self.lpf_alpha) * self.prev_d_pitch
+
+        self.prev_d_yaw = d_yaw_filt
+        self.prev_d_pitch = d_pitch_filt
+        self.last_err_yaw = err_yaw
+        self.last_err_pitch = err_pitch
+
+        # PD command clamped to [-max_cmd, max_cmd]
+        cmd_yaw = float(np.clip(self.kp * err_yaw + self.kd * d_yaw_filt,
                                 -self.max_cmd, self.max_cmd))
-        cmd_pitch = float(np.clip(self.kp * math.degrees(pitch_angle),
+        cmd_pitch = float(np.clip(self.kp * err_pitch + self.kd * d_pitch_filt,
                                   -self.max_cmd, self.max_cmd))
         cmd_roll = 0.0
         return yaw_angle, pitch_angle, cmd_yaw, cmd_pitch, cmd_roll
@@ -158,7 +208,7 @@ def main():
     ap.add_argument("--pins", default="17,18,19")
     ap.add_argument("--fov-h", type=float, default=62.0)
     ap.add_argument("--fov-v", type=float, default=48.0)
-    ap.add_argument("--kp", type=float, default=0.05)
+    ap.add_argument("--kp", type=float, default=0.04)
     args = ap.parse_args()
 
     interp = load_interpreter(args.model)
@@ -228,6 +278,10 @@ def main():
                 cv2.circle(frame, (cx, cy), 6, (0,0,255), -1)
                 cv2.putText(frame, f"AIM ({cx},{cy})", (cx+8, cy),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 2)
+            else:
+                # No drone detected this frame: reset controller state so a
+                # later re-acquisition does not produce a derivative kick.
+                aim.reset()
 
             cv2.imshow("Aim Controller (Pi 5)", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
